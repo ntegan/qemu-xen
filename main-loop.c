@@ -140,6 +140,50 @@ int qemu_init_main_loop(void)
     return 0;
 }
 
+static void check_cve_2014_3672_xen(void)
+{
+    static unsigned long limit = ~0UL;
+    const int fd = 2;
+    struct stat stab;
+
+    if (limit == ~0UL) {
+        const char *s = getenv("XEN_QEMU_CONSOLE_LIMIT");
+        /* XEN_QEMU_CONSOLE_LIMIT=0 means no limit */
+        limit = s ? strtoul(s,0,0) : 0;
+    }
+    if (limit == 0)
+        return;
+
+    int r = fstat(fd, &stab);
+    if (r) {
+        perror("fstat stderr (for CVE-2014-3672 check)");
+        exit(-1);
+    }
+    if (!S_ISREG(stab.st_mode))
+        return;
+    if (stab.st_size <= limit)
+        return;
+
+    /* oh dear */
+    fprintf(stderr,"\r\n"
+            "Closing stderr due to CVE-2014-3672 limit. "
+            " Set XEN_QEMU_CONSOLE_LIMIT to number of bytes to override,"
+            " or 0 for no limit.\n");
+    fflush(stderr);
+
+    int nfd = open("/dev/null", O_WRONLY);
+    if (nfd < 0) {
+        perror("open /dev/null (for CVE-2014-3672 check)");
+        exit(-1);
+    }
+    r = dup2(nfd, fd);
+    if (r != fd) {
+        perror("dup2 /dev/null (for CVE-2014-3672 check)");
+        exit(-1);
+    }
+    close(nfd);
+}
+
 static fd_set rfds, wfds, xfds;
 static int nfds;
 static GPollFD poll_fds[1024 * 2]; /* this is probably overkill */
@@ -214,6 +258,8 @@ static int os_host_main_loop_wait(uint32_t timeout)
 {
     struct timeval tv, *tvarg = NULL;
     int ret;
+
+    check_cve_2014_3672_xen();
 
     glib_select_fill(&nfds, &rfds, &wfds, &xfds, &timeout);
 
@@ -335,6 +381,8 @@ static int os_host_main_loop_wait(uint32_t timeout)
     WaitObjects *w = &wait_objects;
     gint poll_timeout;
     static struct timeval tv0;
+
+    check_cve_2014_3672_xen();
 
     /* XXX: need to suppress polling by better using win32 events */
     ret = 0;
