@@ -2168,6 +2168,9 @@ static void pc_machine_initfn(Object *obj)
     pcms->acpi_nvdimm_state.is_enabled = false;
     object_property_add_bool(obj, PC_MACHINE_NVDIMM, pc_machine_get_nvdimm,
                              pc_machine_set_nvdimm, &error_abort);
+
+    /* acpi build is enabled by default if machine supports it */
+    pcms->acpi_build_enabled = PC_MACHINE_GET_CLASS(pcms)->has_acpi_build;
 }
 
 static void pc_machine_reset(void)
