@@ -1330,6 +1330,10 @@ void xen_hvm_init(PCMachineState *pcms, MemoryRegion **ram_memory)
     }
     xen_be_register_common();
     xen_read_physmap(state);
+
+    /* Disable ACPI build because Xen handles it */
+    pcms->acpi_build_enabled = false;
+
     return;
 
 err:
