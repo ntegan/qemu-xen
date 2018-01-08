@@ -43,6 +43,7 @@
 #include "migration/register.h"
 #include "mmu-hash64.h"
 #include "mmu-book3s-v3.h"
+#include "cpu-models.h"
 #include "qom/cpu.h"
 
 #include "hw/boards.h"
@@ -251,9 +252,10 @@ static int spapr_fixup_cpu_numa_dt(void *fdt, int offset, PowerPCCPU *cpu)
 }
 
 /* Populate the "ibm,pa-features" property */
-static void spapr_populate_pa_features(CPUPPCState *env, void *fdt, int offset,
-                                      bool legacy_guest)
+static void spapr_populate_pa_features(PowerPCCPU *cpu, void *fdt, int offset,
+                                       bool legacy_guest)
 {
+    CPUPPCState *env = &cpu->env;
     uint8_t pa_features_206[] = { 6, 0,
         0xf6, 0x1f, 0xc7, 0x00, 0x80, 0xc0 };
     uint8_t pa_features_207[] = { 24, 0,
@@ -286,23 +288,22 @@ static void spapr_populate_pa_features(CPUPPCState *env, void *fdt, int offset,
         /* 60: NM atomic, 62: RNG */
         0x80, 0x00, 0x80, 0x00, 0x00, 0x00, /* 60 - 65 */
     };
-    uint8_t *pa_features;
+    uint8_t *pa_features = NULL;
     size_t pa_size;
 
-    switch (POWERPC_MMU_VER(env->mmu_model)) {
-    case POWERPC_MMU_VER_2_06:
+    if (ppc_check_compat(cpu, CPU_POWERPC_LOGICAL_2_06, 0, cpu->compat_pvr)) {
         pa_features = pa_features_206;
         pa_size = sizeof(pa_features_206);
-        break;
-    case POWERPC_MMU_VER_2_07:
+    }
+    if (ppc_check_compat(cpu, CPU_POWERPC_LOGICAL_2_07, 0, cpu->compat_pvr)) {
         pa_features = pa_features_207;
         pa_size = sizeof(pa_features_207);
-        break;
-    case POWERPC_MMU_VER_3_00:
+    }
+    if (ppc_check_compat(cpu, CPU_POWERPC_LOGICAL_3_00, 0, cpu->compat_pvr)) {
         pa_features = pa_features_300;
         pa_size = sizeof(pa_features_300);
-        break;
-    default:
+    }
+    if (!pa_features) {
         return;
     }
 
@@ -339,7 +340,6 @@ static int spapr_fixup_cpu_dt(void *fdt, sPAPRMachineState *spapr)
 
     CPU_FOREACH(cs) {
         PowerPCCPU *cpu = POWERPC_CPU(cs);
-        CPUPPCState *env = &cpu->env;
         DeviceClass *dc = DEVICE_GET_CLASS(cs);
         int index = ppc_get_vcpu_dt_id(cpu);
         int compat_smt = MIN(smp_threads, ppc_compat_max_threads(cpu));
@@ -384,7 +384,7 @@ static int spapr_fixup_cpu_dt(void *fdt, sPAPRMachineState *spapr)
             return ret;
         }
 
-        spapr_populate_pa_features(env, fdt, offset,
+        spapr_populate_pa_features(cpu, fdt, offset,
                                          spapr->cas_legacy_guest_workaround);
     }
     return ret;
@@ -581,7 +581,7 @@ static void spapr_populate_cpu_dt(CPUState *cs, void *fdt, int offset,
                           page_sizes_prop, page_sizes_prop_size)));
     }
 
-    spapr_populate_pa_features(env, fdt, offset, false);
+    spapr_populate_pa_features(cpu, fdt, offset, false);
 
     _FDT((fdt_setprop_cell(fdt, offset, "ibm,chip-id",
                            cs->cpu_index / vcpus_per_socket)));
@@ -790,6 +790,26 @@ out:
     return ret;
 }
 
+static bool spapr_hotplugged_dev_before_cas(void)
+{
+    Object *drc_container, *obj;
+    ObjectProperty *prop;
+    ObjectPropertyIterator iter;
+
+    drc_container = container_get(object_get_root(), "/dr-connector");
+    object_property_iter_init(&iter, drc_container);
+    while ((prop = object_property_iter_next(&iter))) {
+        if (!strstart(prop->type, "link<", NULL)) {
+            continue;
+        }
+        obj = object_property_get_link(drc_container, prop->name, NULL);
+        if (spapr_drc_needed(obj)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int spapr_h_cas_compose_response(sPAPRMachineState *spapr,
                                  target_ulong addr, target_ulong size,
                                  sPAPROptionVector *ov5_updates)
@@ -797,9 +817,13 @@ int spapr_h_cas_compose_response(sPAPRMachineState *spapr,
     void *fdt, *fdt_skel;
     sPAPRDeviceTreeUpdateHeader hdr = { .version_id = 1 };
 
+    if (spapr_hotplugged_dev_before_cas()) {
+        return 1;
+    }
+
     size -= sizeof(hdr);
 
-    /* Create sceleton */
+    /* Create skeleton */
     fdt_skel = g_malloc0(size);
     _FDT((fdt_create(fdt_skel, size)));
     _FDT((fdt_begin_node(fdt_skel, "")));
@@ -920,7 +944,11 @@ static void spapr_dt_ov5_platform_support(void *fdt, int chosen)
         26, 0x40, /* Radix options: GTSE == yes. */
     };
 
-    if (kvm_enabled()) {
+    if (!ppc_check_compat(first_ppc_cpu, CPU_POWERPC_LOGICAL_3_00, 0,
+                          first_ppc_cpu->compat_pvr)) {
+        /* If we're in a pre POWER9 compat mode then the guest should do hash */
+        val[3] = 0x00; /* Hash */
+    } else if (kvm_enabled()) {
         if (kvmppc_has_cap_mmu_radix() && kvmppc_has_cap_mmu_hash_v3()) {
             val[3] = 0x80; /* OV5_MMU_BOTH */
         } else if (kvmppc_has_cap_mmu_radix()) {
@@ -929,13 +957,8 @@ static void spapr_dt_ov5_platform_support(void *fdt, int chosen)
             val[3] = 0x00; /* Hash */
         }
     } else {
-        if (first_ppc_cpu->env.mmu_model & POWERPC_MMU_V3) {
-            /* V3 MMU supports both hash and radix (with dynamic switching) */
-            val[3] = 0xC0;
-        } else {
-            /* Otherwise we can only do hash */
-            val[3] = 0x00;
-        }
+        /* V3 MMU supports both hash and radix in tcg (with dynamic switching) */
+        val[3] = 0xC0;
     }
     _FDT(fdt_setprop(fdt, chosen, "ibm,arch-vec-5-platform-support",
                      val, sizeof(val)));
@@ -1342,7 +1365,10 @@ void spapr_setup_hpt_and_vrma(sPAPRMachineState *spapr)
             && !spapr_ovec_test(spapr->ov5_cas, OV5_HPT_RESIZE))) {
         hpt_shift = spapr_hpt_shift_for_ramsize(MACHINE(spapr)->maxram_size);
     } else {
-        hpt_shift = spapr_hpt_shift_for_ramsize(MACHINE(spapr)->ram_size);
+        uint64_t current_ram_size;
+
+        current_ram_size = MACHINE(spapr)->ram_size + pc_existing_dimms_capacity(&error_abort);
+        hpt_shift = spapr_hpt_shift_for_ramsize(current_ram_size);
     }
     spapr_reallocate_hpt(spapr, hpt_shift, &error_fatal);
 
@@ -1369,6 +1395,19 @@ static void find_unknown_sysbus_device(SysBusDevice *sbdev, void *opaque)
     }
 }
 
+static int spapr_reset_drcs(Object *child, void *opaque)
+{
+    sPAPRDRConnector *drc =
+        (sPAPRDRConnector *) object_dynamic_cast(child,
+                                                 TYPE_SPAPR_DR_CONNECTOR);
+
+    if (drc) {
+        spapr_drc_reset(drc);
+    }
+
+    return 0;
+}
+
 static void ppc_spapr_reset(void)
 {
     MachineState *machine = MACHINE(qdev_get_machine());
@@ -1382,7 +1421,10 @@ static void ppc_spapr_reset(void)
     /* Check for unknown sysbus devices */
     foreach_dynamic_sysbus_device(find_unknown_sysbus_device, NULL);
 
-    if (kvm_enabled() && kvmppc_has_cap_mmu_radix()) {
+    first_ppc_cpu = POWERPC_CPU(first_cpu);
+    if (kvm_enabled() && kvmppc_has_cap_mmu_radix() &&
+        ppc_check_compat(first_ppc_cpu, CPU_POWERPC_LOGICAL_3_00, 0,
+                         spapr->max_compat_pvr)) {
         /* If using KVM with radix mode available, VCPUs can be started
          * without a HPT because KVM will start them in radix mode.
          * Set the GR bit in PATB so that we know there is no HPT. */
@@ -1392,6 +1434,15 @@ static void ppc_spapr_reset(void)
     }
 
     qemu_devices_reset();
+
+    /* DRC reset may cause a device to be unplugged. This will cause troubles
+     * if this device is used by another device (eg, a running vhost backend
+     * will crash QEMU if the DIMM holding the vring goes away). To avoid such
+     * situations, we reset DRCs after all devices have been reset.
+     */
+    object_child_foreach_recursive(object_get_root(), spapr_reset_drcs, NULL);
+
+    spapr_clear_pending_events(spapr);
 
     /*
      * We place the device tree and RTAS just below either the top of the RMA,
@@ -1432,7 +1483,6 @@ static void ppc_spapr_reset(void)
     g_free(fdt);
 
     /* Set up the entry state */
-    first_ppc_cpu = POWERPC_CPU(first_cpu);
     first_ppc_cpu->env.gpr[3] = fdt_addr;
     first_ppc_cpu->env.gpr[5] = 0;
     first_cpu->halted = 0;
