@@ -263,7 +263,9 @@ static void tpm_tis_prep_abort(TPMState *s, uint8_t locty, uint8_t newlocty)
 {
     uint8_t busy_locty;
 
-    s->aborting_locty = locty;
+    assert(TPM_TIS_IS_VALID_LOCTY(newlocty));
+
+    s->aborting_locty = locty; /* may also be TPM_TIS_NO_LOCALITY */
     s->next_locty = newlocty;  /* locality after successful abort */
 
     /*
@@ -293,9 +295,11 @@ static void tpm_tis_request_completed(TPMIf *ti, int ret)
     uint8_t locty = s->cmd.locty;
     uint8_t l;
 
+    assert(TPM_TIS_IS_VALID_LOCTY(locty));
+
     if (s->cmd.selftest_done) {
         for (l = 0; l < TPM_TIS_NUM_LOCALITIES; l++) {
-            s->loc[locty].sts |= TPM_TIS_STS_SELFTEST_DONE;
+            s->loc[l].sts |= TPM_TIS_STS_SELFTEST_DONE;
         }
     }
 
@@ -616,7 +620,7 @@ static void tpm_tis_mmio_write(void *opaque, hwaddr addr,
                 }
 
                 /* cancel any seize by a lower locality */
-                for (l = 0; l < locty - 1; l++) {
+                for (l = 0; l < locty; l++) {
                     s->loc[l].access &= ~TPM_TIS_ACCESS_SEIZE;
                 }
 

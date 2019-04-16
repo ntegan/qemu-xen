@@ -198,7 +198,6 @@ static void coroutine_fn mirror_write_complete(MirrorOp *op, int ret)
 {
     MirrorBlockJob *s = op->s;
 
-    aio_context_acquire(blk_get_aio_context(s->common.blk));
     if (ret < 0) {
         BlockErrorAction action;
 
@@ -208,15 +207,14 @@ static void coroutine_fn mirror_write_complete(MirrorOp *op, int ret)
             s->ret = ret;
         }
     }
+
     mirror_iteration_done(op, ret);
-    aio_context_release(blk_get_aio_context(s->common.blk));
 }
 
 static void coroutine_fn mirror_read_complete(MirrorOp *op, int ret)
 {
     MirrorBlockJob *s = op->s;
 
-    aio_context_acquire(blk_get_aio_context(s->common.blk));
     if (ret < 0) {
         BlockErrorAction action;
 
@@ -227,12 +225,11 @@ static void coroutine_fn mirror_read_complete(MirrorOp *op, int ret)
         }
 
         mirror_iteration_done(op, ret);
-    } else {
-        ret = blk_co_pwritev(s->target, op->offset,
-                             op->qiov.size, &op->qiov, 0);
-        mirror_write_complete(op, ret);
+        return;
     }
-    aio_context_release(blk_get_aio_context(s->common.blk));
+
+    ret = blk_co_pwritev(s->target, op->offset, op->qiov.size, &op->qiov, 0);
+    mirror_write_complete(op, ret);
 }
 
 /* Clip bytes relative to offset to not exceed end-of-file */
@@ -1497,6 +1494,11 @@ static void mirror_start_job(const char *job_id, BlockDriverState *bs,
 
     if (buf_size == 0) {
         buf_size = DEFAULT_MIRROR_BUF_SIZE;
+    }
+
+    if (bs == target) {
+        error_setg(errp, "Can't mirror node into itself");
+        return;
     }
 
     /* In the case of active commit, add dummy driver to provide consistent

@@ -8077,6 +8077,9 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         }
         break;
     case TARGET_NR_write:
+        if (arg2 == 0 && arg3 == 0) {
+            return get_errno(safe_write(arg1, 0, 0));
+        }
         if (!(p = lock_user(VERIFY_READ, arg2, arg3, 1)))
             goto efault;
         if (fd_trans_target_to_host_data(arg1)) {
@@ -10848,15 +10851,22 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #endif
 #ifdef TARGET_AARCH64
         case TARGET_PR_SVE_SET_VL:
-            /* We cannot support either PR_SVE_SET_VL_ONEXEC
-               or PR_SVE_VL_INHERIT.  Therefore, anything above
-               ARM_MAX_VQ results in EINVAL.  */
+            /*
+             * We cannot support either PR_SVE_SET_VL_ONEXEC or
+             * PR_SVE_VL_INHERIT.  Note the kernel definition
+             * of sve_vl_valid allows for VQ=512, i.e. VL=8192,
+             * even though the current architectural maximum is VQ=16.
+             */
             ret = -TARGET_EINVAL;
             if (arm_feature(cpu_env, ARM_FEATURE_SVE)
-                && arg2 >= 0 && arg2 <= ARM_MAX_VQ * 16 && !(arg2 & 15)) {
+                && arg2 >= 0 && arg2 <= 512 * 16 && !(arg2 & 15)) {
                 CPUARMState *env = cpu_env;
-                int old_vq = (env->vfp.zcr_el[1] & 0xf) + 1;
-                int vq = MAX(arg2 / 16, 1);
+                ARMCPU *cpu = arm_env_get_cpu(env);
+                uint32_t vq, old_vq;
+
+                old_vq = (env->vfp.zcr_el[1] & 0xf) + 1;
+                vq = MAX(arg2 / 16, 1);
+                vq = MIN(vq, cpu->sve_max_vq);
 
                 if (vq < old_vq) {
                     aarch64_sve_narrow_vq(env, vq);
@@ -10900,8 +10910,15 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             arg4 = arg5;
             arg5 = arg6;
         }
-        if (!(p = lock_user(VERIFY_WRITE, arg2, arg3, 0)))
-            goto efault;
+        if (arg2 == 0 && arg3 == 0) {
+            /* Special-case NULL buffer and zero length, which should succeed */
+            p = 0;
+        } else {
+            p = lock_user(VERIFY_WRITE, arg2, arg3, 0);
+            if (!p) {
+                goto efault;
+            }
+        }
         ret = get_errno(pread64(arg1, p, arg3, target_offset64(arg4, arg5)));
         unlock_user(p, arg2, ret);
         break;
@@ -10910,8 +10927,15 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             arg4 = arg5;
             arg5 = arg6;
         }
-        if (!(p = lock_user(VERIFY_READ, arg2, arg3, 1)))
-            goto efault;
+        if (arg2 == 0 && arg3 == 0) {
+            /* Special-case NULL buffer and zero length, which should succeed */
+            p = 0;
+        } else {
+            p = lock_user(VERIFY_READ, arg2, arg3, 1);
+            if (!p) {
+                goto efault;
+            }
+        }
         ret = get_errno(pwrite64(arg1, p, arg3, target_offset64(arg4, arg5)));
         unlock_user(p, arg2, 0);
         break;

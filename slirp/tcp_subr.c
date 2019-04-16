@@ -640,6 +640,11 @@ tcp_emu(struct socket *so, struct mbuf *m)
 			socklen_t addrlen = sizeof(struct sockaddr_in);
 			struct sbuf *so_rcv = &so->so_rcv;
 
+			if (m->m_len > so_rcv->sb_datalen
+					- (so_rcv->sb_wptr - so_rcv->sb_data)) {
+			    return 1;
+			}
+
 			memcpy(so_rcv->sb_wptr, m->m_data, m->m_len);
 			so_rcv->sb_wptr += m->m_len;
 			so_rcv->sb_rptr += m->m_len;
@@ -662,12 +667,12 @@ tcp_emu(struct socket *so, struct mbuf *m)
 							break;
 						}
 					}
+					so_rcv->sb_cc = snprintf(so_rcv->sb_data,
+								 so_rcv->sb_datalen,
+								 "%d,%d\r\n", n1, n2);
+					so_rcv->sb_rptr = so_rcv->sb_data;
+					so_rcv->sb_wptr = so_rcv->sb_data + so_rcv->sb_cc;
 				}
-                                so_rcv->sb_cc = snprintf(so_rcv->sb_data,
-                                                         so_rcv->sb_datalen,
-                                                         "%d,%d\r\n", n1, n2);
-				so_rcv->sb_rptr = so_rcv->sb_data;
-				so_rcv->sb_wptr = so_rcv->sb_data + so_rcv->sb_cc;
 			}
 			m_free(m);
 			return 0;

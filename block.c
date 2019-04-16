@@ -2787,6 +2787,7 @@ static BlockDriverState *bdrv_open_inherit(const char *filename,
     bdrv_parent_cb_change_media(bs, true);
 
     qobject_unref(options);
+    options = NULL;
 
     /* For snapshot=on, create a temporary qcow2 overlay. bs points to the
      * temporary snapshot afterwards. */
@@ -4394,6 +4395,7 @@ static void coroutine_fn bdrv_co_invalidate_cache(BlockDriverState *bs,
         if (parent->role->activate) {
             parent->role->activate(parent, &local_err);
             if (local_err) {
+                bs->open_flags |= BDRV_O_INACTIVE;
                 error_propagate(errp, local_err);
                 return;
             }

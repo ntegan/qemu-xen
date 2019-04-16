@@ -978,6 +978,7 @@ static int nbd_negotiate_meta_queries(NBDClient *client,
     if (client->opt == NBD_OPT_LIST_META_CONTEXT && !nb_queries) {
         /* enable all known contexts */
         meta->base_allocation = true;
+        meta->bitmap = !!meta->exp->export_bitmap;
     } else {
         for (i = 0; i < nb_queries; ++i) {
             ret = nbd_negotiate_meta_query(client, meta, errp);
@@ -1951,6 +1952,8 @@ static unsigned int bitmap_to_extents(BdrvDirtyBitmap *bitmap, uint64_t offset,
 
     assert(begin < overall_end && nb_extents);
     while (begin < overall_end && i < nb_extents) {
+        bool next_dirty = !dirty;
+
         if (dirty) {
             end = bdrv_dirty_bitmap_next_zero(bitmap, begin);
         } else {
@@ -1962,6 +1965,7 @@ static unsigned int bitmap_to_extents(BdrvDirtyBitmap *bitmap, uint64_t offset,
             end = MIN(bdrv_dirty_bitmap_size(bitmap),
                       begin + UINT32_MAX + 1 -
                       bdrv_dirty_bitmap_granularity(bitmap));
+            next_dirty = dirty;
         }
         if (dont_fragment && end > overall_end) {
             end = overall_end;
@@ -1971,7 +1975,7 @@ static unsigned int bitmap_to_extents(BdrvDirtyBitmap *bitmap, uint64_t offset,
         extents[i].flags = cpu_to_be32(dirty ? NBD_STATE_DIRTY : 0);
         i++;
         begin = end;
-        dirty = !dirty;
+        dirty = next_dirty;
     }
 
     bdrv_dirty_iter_free(it);
@@ -2135,7 +2139,8 @@ static coroutine_fn int nbd_do_cmd_read(NBDClient *client, NBDRequest *request,
     }
 
     if (client->structured_reply && !(request->flags & NBD_CMD_FLAG_DF) &&
-        request->len) {
+        request->len && request->type != NBD_CMD_CACHE)
+    {
         return nbd_co_send_sparse_read(client, request->handle, request->from,
                                        data, request->len, errp);
     }
