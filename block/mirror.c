@@ -618,11 +618,11 @@ static int mirror_exit_common(Job *job)
 {
     MirrorBlockJob *s = container_of(job, MirrorBlockJob, common.job);
     BlockJob *bjob = &s->common;
-    MirrorBDSOpaque *bs_opaque = s->mirror_top_bs->opaque;
+    MirrorBDSOpaque *bs_opaque;
     AioContext *replace_aio_context = NULL;
-    BlockDriverState *src = s->mirror_top_bs->backing->bs;
-    BlockDriverState *target_bs = blk_bs(s->target);
-    BlockDriverState *mirror_top_bs = s->mirror_top_bs;
+    BlockDriverState *src;
+    BlockDriverState *target_bs;
+    BlockDriverState *mirror_top_bs;
     Error *local_err = NULL;
     bool abort = job->ret < 0;
     int ret = 0;
@@ -631,6 +631,11 @@ static int mirror_exit_common(Job *job)
         return 0;
     }
     s->prepared = true;
+
+    mirror_top_bs = s->mirror_top_bs;
+    bs_opaque = mirror_top_bs->opaque;
+    src = mirror_top_bs->backing->bs;
+    target_bs = blk_bs(s->target);
 
     if (bdrv_chain_contains(src, target_bs)) {
         bdrv_unfreeze_backing_chain(mirror_top_bs, target_bs);
@@ -656,7 +661,10 @@ static int mirror_exit_common(Job *job)
     s->target = NULL;
 
     /* We don't access the source any more. Dropping any WRITE/RESIZE is
-     * required before it could become a backing file of target_bs. */
+     * required before it could become a backing file of target_bs. Not having
+     * these permissions any more means that we can't allow any new requests on
+     * mirror_top_bs from now on, so keep it drained. */
+    bdrv_drained_begin(mirror_top_bs);
     bs_opaque->stop = true;
     bdrv_child_refresh_perms(mirror_top_bs, mirror_top_bs->backing,
                              &error_abort);
@@ -724,6 +732,7 @@ static int mirror_exit_common(Job *job)
     bs_opaque->job = NULL;
 
     bdrv_drained_end(src);
+    bdrv_drained_end(mirror_top_bs);
     s->in_drain = false;
     bdrv_unref(mirror_top_bs);
     bdrv_unref(src);

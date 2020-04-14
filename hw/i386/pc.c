@@ -2403,6 +2403,14 @@ static void pc_cpu_pre_plug(HotplugHandler *hotplug_dev,
         int max_socket = (ms->smp.max_cpus - 1) /
                                 smp_threads / smp_cores / pcms->smp_dies;
 
+        /*
+         * die-id was optional in QEMU 4.0 and older, so keep it optional
+         * if there's only one die per socket.
+         */
+        if (cpu->die_id < 0 && pcms->smp_dies == 1) {
+            cpu->die_id = 0;
+        }
+
         if (cpu->socket_id < 0) {
             error_setg(errp, "CPU socket-id is not set");
             return;
@@ -2879,8 +2887,10 @@ static const CPUArchIdList *pc_possible_cpu_arch_ids(MachineState *ms)
                                  ms->smp.threads, &topo);
         ms->possible_cpus->cpus[i].props.has_socket_id = true;
         ms->possible_cpus->cpus[i].props.socket_id = topo.pkg_id;
-        ms->possible_cpus->cpus[i].props.has_die_id = true;
-        ms->possible_cpus->cpus[i].props.die_id = topo.die_id;
+        if (pcms->smp_dies > 1) {
+            ms->possible_cpus->cpus[i].props.has_die_id = true;
+            ms->possible_cpus->cpus[i].props.die_id = topo.die_id;
+        }
         ms->possible_cpus->cpus[i].props.has_core_id = true;
         ms->possible_cpus->cpus[i].props.core_id = topo.core_id;
         ms->possible_cpus->cpus[i].props.has_thread_id = true;

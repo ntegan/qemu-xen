@@ -473,9 +473,10 @@ static bool coroutine_fn do_perform_cow_encrypt(BlockDriverState *bs,
         assert((offset_in_cluster & ~BDRV_SECTOR_MASK) == 0);
         assert((bytes & ~BDRV_SECTOR_MASK) == 0);
         assert(s->crypto);
-        if (qcow2_co_encrypt(bs, cluster_offset,
-                             src_cluster_offset + offset_in_cluster,
-                             buffer, bytes) < 0) {
+        if (qcow2_co_encrypt(bs,
+                start_of_cluster(s, cluster_offset + offset_in_cluster),
+                src_cluster_offset + offset_in_cluster,
+                buffer, bytes) < 0) {
             return false;
         }
     }
@@ -1340,6 +1341,9 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
     nb_clusters = MIN(nb_clusters, s->l2_slice_size - l2_index);
     assert(nb_clusters <= INT_MAX);
 
+    /* Limit total allocation byte count to INT_MAX */
+    nb_clusters = MIN(nb_clusters, INT_MAX >> s->cluster_bits);
+
     /* Find L2 entry for the first involved cluster */
     ret = get_cluster_table(bs, guest_offset, &l2_slice, &l2_index);
     if (ret < 0) {
@@ -1428,7 +1432,7 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
      * request actually writes to (excluding COW at the end)
      */
     uint64_t requested_bytes = *bytes + offset_into_cluster(s, guest_offset);
-    int avail_bytes = MIN(INT_MAX, nb_clusters << s->cluster_bits);
+    int avail_bytes = nb_clusters << s->cluster_bits;
     int nb_bytes = MIN(requested_bytes, avail_bytes);
     QCowL2Meta *old_m = *m;
 

@@ -271,3 +271,8 @@
 254 rw backing quick
 255 rw quick
 256 rw quick
+265 rw auto quick
+266 rw quick
+267 rw auto quick snapshot
+270 rw backing quick
+272 rw
