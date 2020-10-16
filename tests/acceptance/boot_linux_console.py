@@ -28,19 +28,29 @@ try:
 except CmdNotFoundError:
     P7ZIP_AVAILABLE = False
 
-class BootLinuxConsole(Test):
-    """
-    Boots a Linux kernel and checks that the console is operational and the
-    kernel command line is properly passed from QEMU to the kernel
-    """
+"""
+Round up to next power of 2
+"""
+def pow2ceil(x):
+    return 1 if x == 0 else 2**(x - 1).bit_length()
 
-    timeout = 90
+"""
+Expand file size to next power of 2
+"""
+def image_pow2ceil_expand(path):
+        size = os.path.getsize(path)
+        size_aligned = pow2ceil(size)
+        if size != size_aligned:
+            with open(path, 'ab+') as fd:
+                fd.truncate(size_aligned)
 
+class LinuxKernelTest(Test):
     KERNEL_COMMON_COMMAND_LINE = 'printk.time=0 '
 
-    def wait_for_console_pattern(self, success_message):
+    def wait_for_console_pattern(self, success_message, vm=None):
         wait_for_console_pattern(self, success_message,
-                                 failure_message='Kernel panic - not syncing')
+                                 failure_message='Kernel panic - not syncing',
+                                 vm=vm)
 
     def extract_from_deb(self, deb, path):
         """
@@ -78,6 +88,13 @@ class BootLinuxConsole(Test):
         process.run("rpm2cpio %s | cpio -id %s" % (rpm, path), shell=True)
         os.chdir(cwd)
         return os.path.normpath(os.path.join(self.workdir, path))
+
+class BootLinuxConsole(LinuxKernelTest):
+    """
+    Boots a Linux kernel and checks that the console is operational and the
+    kernel command line is properly passed from QEMU to the kernel
+    """
+    timeout = 90
 
     def test_x86_64_pc(self):
         """
@@ -583,6 +600,7 @@ class BootLinuxConsole(Test):
         """
         :avocado: tags=arch:arm
         :avocado: tags=machine:orangepi-pc
+        :avocado: tags=device:sd
         """
         deb_url = ('https://apt.armbian.com/pool/main/l/'
                    'linux-4.20.7-sunxi/linux-image-dev-sunxi_5.75_armhf.deb')
@@ -598,6 +616,7 @@ class BootLinuxConsole(Test):
         rootfs_path_xz = self.fetch_asset(rootfs_url, asset_hash=rootfs_hash)
         rootfs_path = os.path.join(self.workdir, 'rootfs.cpio')
         archive.lzma_uncompress(rootfs_path_xz, rootfs_path)
+        image_pow2ceil_expand(rootfs_path)
 
         self.vm.set_console()
         kernel_command_line = (self.KERNEL_COMMON_COMMAND_LINE +
@@ -632,9 +651,10 @@ class BootLinuxConsole(Test):
         """
         :avocado: tags=arch:arm
         :avocado: tags=machine:orangepi-pc
+        :avocado: tags=device:sd
         """
 
-        # This test download a 196MB compressed image and expand it to 932MB...
+        # This test download a 196MB compressed image and expand it to 1GB
         image_url = ('https://dl.armbian.com/orangepipc/archive/'
                      'Armbian_19.11.3_Orangepipc_bionic_current_5.3.9.7z')
         image_hash = '196a8ffb72b0123d92cea4a070894813d305c71e'
@@ -642,6 +662,7 @@ class BootLinuxConsole(Test):
         image_name = 'Armbian_19.11.3_Orangepipc_bionic_current_5.3.9.img'
         image_path = os.path.join(self.workdir, image_name)
         process.run("7z e -o%s %s" % (self.workdir, image_path_7z))
+        image_pow2ceil_expand(image_path)
 
         self.vm.set_console()
         self.vm.add_args('-drive', 'file=' + image_path + ',if=sd,format=raw',
@@ -673,8 +694,9 @@ class BootLinuxConsole(Test):
         """
         :avocado: tags=arch:arm
         :avocado: tags=machine:orangepi-pc
+        :avocado: tags=device:sd
         """
-        # This test download a 304MB compressed image and expand it to 1.3GB...
+        # This test download a 304MB compressed image and expand it to 2GB
         deb_url = ('http://snapshot.debian.org/archive/debian/'
                    '20200108T145233Z/pool/main/u/u-boot/'
                    'u-boot-sunxi_2020.01%2Bdfsg-1_armhf.deb')
@@ -691,20 +713,15 @@ class BootLinuxConsole(Test):
         image_hash = '2babb29d36d8360adcb39c09e31060945259917a'
         image_path_gz = self.fetch_asset(image_url, asset_hash=image_hash)
         image_path = os.path.join(self.workdir, 'armv7.img')
-        image_drive_args = 'if=sd,format=raw,snapshot=on,file=' + image_path
         archive.gzip_uncompress(image_path_gz, image_path)
+        image_pow2ceil_expand(image_path)
+        image_drive_args = 'if=sd,format=raw,snapshot=on,file=' + image_path
 
         # dd if=u-boot-sunxi-with-spl.bin of=armv7.img bs=1K seek=8 conv=notrunc
         with open(uboot_path, 'rb') as f_in:
             with open(image_path, 'r+b') as f_out:
                 f_out.seek(8 * 1024)
                 shutil.copyfileobj(f_in, f_out)
-
-                # Extend image, to avoid that NetBSD thinks the partition
-                # inside the image is larger than device size itself
-                f_out.seek(0, 2)
-                f_out.seek(64 * 1024 * 1024, 1)
-                f_out.write(bytearray([0x00]))
 
         self.vm.set_console()
         self.vm.add_args('-nic', 'user',

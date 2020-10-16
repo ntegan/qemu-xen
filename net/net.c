@@ -610,7 +610,7 @@ void qemu_flush_or_purge_queued_packets(NetClientState *nc, bool purge)
         qemu_notify_event();
     } else if (purge) {
         /* Unable to empty the queue, purge remaining packets */
-        qemu_net_queue_purge(nc->incoming_queue, nc);
+        qemu_net_queue_purge(nc->incoming_queue, nc->peer);
     }
 }
 
@@ -1506,7 +1506,7 @@ static int net_param_nic(void *dummy, QemuOpts *opts, Error **errp)
     /* Create an ID if the user did not specify one */
     nd_id = g_strdup(qemu_opts_id(opts));
     if (!nd_id) {
-        nd_id = g_strdup_printf("__org.qemu.nic%i\n", idx);
+        nd_id = g_strdup_printf("__org.qemu.nic%i", idx);
         qemu_opts_set_id(opts, nd_id);
     }
 
